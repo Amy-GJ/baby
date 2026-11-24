@@ -1,0 +1,16 @@
+create table public.rooms(id uuid primary key default gen_random_uuid());
+create table public.members(user_id uuid primary key references auth.users(id) on delete cascade, room_id uuid not null references public.rooms(id) on delete cascade);
+create table public.entries(id uuid primary key default gen_random_uuid(),room_id uuid not null references public.rooms(id) on delete cascade,kind text not null,data jsonb not null,created_at timestamptz default now());
+create index entries_room_idx on public.entries(room_id);
+alter table public.rooms enable row level security;
+alter table public.members enable row level security;
+alter table public.entries enable row level security;
+create policy own_membership on public.members for select to authenticated using(user_id=auth.uid());
+create policy shared_entries on public.entries for all to authenticated using(room_id in(select m.room_id from public.members m where m.user_id=auth.uid())) with check(room_id in(select m.room_id from public.members m where m.user_id=auth.uid()));
+create function public.create_room() returns uuid language plpgsql security definer set search_path='' as $$ declare r uuid; begin if auth.uid() is null then raise exception 'Login required'; end if; insert into public.rooms default values returning id into r; insert into public.members values(auth.uid(),r); return r; end $$;
+create function public.join_room(code uuid) returns uuid language plpgsql security definer set search_path='' as $$ begin if auth.uid() is null then raise exception 'Login required'; end if; perform id from public.rooms where id=code for update; if not found then raise exception 'Invalid code'; end if; if (select count(*) from public.members where room_id=code)>=2 then raise exception 'Room full'; end if; insert into public.members values(auth.uid(),code); return code; end $$;
+revoke all on function public.create_room() from public,anon;
+revoke all on function public.join_room(uuid) from public,anon;
+grant execute on function public.create_room() to authenticated;
+grant execute on function public.join_room(uuid) to authenticated;
+alter publication supabase_realtime add table public.entries;
